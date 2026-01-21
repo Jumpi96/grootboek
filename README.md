@@ -1,6 +1,6 @@
 # Grootboek
 
-[![CI](https://github.com/juampilorenzo/grootboek/actions/workflows/ci.yml/badge.svg)](https://github.com/juampilorenzo/grootboek/actions/workflows/ci.yml)
+[![CI](https://github.com/Jumpi96/grootboek/actions/workflows/ci.yml/badge.svg)](https://github.com/Jumpi96/grootboek/actions/workflows/ci.yml)
 
 A TypeScript financial ledger system with storage adapters.
 
@@ -18,10 +18,10 @@ Grootboek is a library-only npm package for managing financial transactions with
 
 ```bash
 # Install from GitHub (main branch)
-npm install github:juampilorenzo/grootboek
+npm install github:Jumpi96/grootboek
 
 # Install a specific version/tag
-npm install github:juampilorenzo/grootboek#v0.1.0
+npm install github:Jumpi96/grootboek#v0.1.0
 ```
 
 ### From npm (if published)
