@@ -1,5 +1,7 @@
 # Grootboek
 
+[![CI](https://github.com/juampilorenzo/grootboek/actions/workflows/ci.yml/badge.svg)](https://github.com/juampilorenzo/grootboek/actions/workflows/ci.yml)
+
 A TypeScript financial ledger system with storage adapters.
 
 ## Overview
@@ -36,40 +38,60 @@ npm install pg
 
 ## Usage
 
-### Git Adapter (Journal Files)
+### File Adapter (Simplest - No Git)
+
+For reading/writing journal files without Git integration:
+
+```typescript
+import { createFileLedgerService } from 'grootboek/adapters/file'
+
+// Node.js
+const ledger = createFileLedgerService({
+  journalPath: './my.journal'
+})
+
+const transactions = await ledger.listTransactions()
+const balances = await ledger.getBalances()
+```
+
+#### Browser Usage
+
+```typescript
+import { createFileLedgerService, InMemoryFileProvider } from 'grootboek/adapters/file'
+
+// In-memory (no persistence)
+const ledger = createFileLedgerService({
+  journalPath: 'ledger.journal',
+  fileProvider: new InMemoryFileProvider()
+})
+
+// Or with localStorage
+const localStorageProvider = {
+  read: async (path) => localStorage.getItem(path) ?? '',
+  write: async (path, content) => localStorage.setItem(path, content),
+  stat: async (path) => localStorage.getItem(path) ? { lastModified: new Date() } : null
+}
+
+const ledger = createFileLedgerService({
+  journalPath: 'myLedger',
+  fileProvider: localStorageProvider
+})
+```
+
+### Git Adapter (Journal Files + Git Commits)
+
+For journal files with automatic Git commits:
 
 ```typescript
 import { createGitLedgerService } from 'grootboek/adapters/git'
 
 const ledger = createGitLedgerService({
   journalPath: './my.journal',
-  autoCommit: false
+  autoCommit: true  // Commits after each write
 })
 
-// List transactions
 const transactions = await ledger.listTransactions()
-
-// Get balances
 const balances = await ledger.getBalances()
-
-// Get balance for specific accounts
-const assetsBalance = await ledger.getBalance('Assets:**')
-
-// Append new transaction
-await ledger.appendTransaction(new Transaction({
-  date: new Date(),
-  description: 'Coffee',
-  postings: [
-    new Posting({
-      account: new Account({ name: 'Assets:Cash' }),
-      amount: new Money({ quantity: -5, commodity: '$' })
-    }),
-    new Posting({
-      account: new Account({ name: 'Expenses:Food' }),
-      amount: new Money({ quantity: 5, commodity: '$' })
-    })
-  ]
-}))
 ```
 
 ### Postgres Adapter
@@ -82,14 +104,52 @@ const pool = new Pool({
   connectionString: 'postgresql://...'
 })
 
-// Run migrations
+// Run migrations (creates tables with default names)
 await runMigrations(pool)
 
 // Create service
 const ledger = createPostgresLedgerService({ pool })
+```
 
-// Use same API as Git adapter
-const transactions = await ledger.listTransactions()
+#### Custom Table Names (Avoid Conflicts)
+
+If your app already has tables like `transactions` or `accounts`, use a prefix:
+
+```typescript
+import { createPostgresLedgerService, runMigrations, generateSchema, createTableNames } from 'grootboek/adapters/postgres'
+
+// Option 1: Use a table prefix
+const tableConfig = { prefix: 'ledger_' }
+
+await runMigrations(pool, tableConfig)
+const ledger = createPostgresLedgerService({ pool, tables: tableConfig })
+// Creates: ledger_transactions, ledger_accounts, ledger_postings, etc.
+
+// Option 2: Custom table names
+const tableConfig = {
+  tables: {
+    transactions: 'finance_txns',
+    accounts: 'finance_accounts',
+    postings: 'finance_postings',
+    commodities: 'finance_commodities',
+    prices: 'finance_prices'
+  }
+}
+```
+
+#### Bring Your Own Migrations
+
+If you use Prisma, Knex, or another migration tool, get the SQL schema instead:
+
+```typescript
+import { generateSchema, createTableNames } from 'grootboek/adapters/postgres'
+
+// Generate SQL for your migration file
+const tables = createTableNames({ prefix: 'ledger_' })
+const sql = generateSchema(tables)
+
+console.log(sql)
+// Use this SQL in your own migration system
 ```
 
 ### Core Domain Objects
@@ -198,7 +258,8 @@ grootboek/
 │   │   ├── ports/      # Repository interfaces
 │   │   └── services/   # LedgerService, BalanceCalculator
 │   ├── adapters/
-│   │   ├── git/        # Journal file adapter
+│   │   ├── file/       # Simple file adapter (Node.js/browser)
+│   │   ├── git/        # Journal file + Git commits
 │   │   └── postgres/   # PostgreSQL adapter
 │   └── testing/        # Test builders
 └── tests/

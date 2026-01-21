@@ -13,22 +13,29 @@ import {
   TransactionRow,
   PostingRow
 } from './mappers/transaction-mapper.js'
+import { TableNames, createTableNames, TableConfigOptions } from './table-config.js'
 
 export interface PostgresLedgerRepositoryOptions {
   pool: Pool
+  /**
+   * Table configuration - use prefix or custom table names
+   */
+  tables?: TableConfigOptions
 }
 
 export class PostgresLedgerRepository implements LedgerRepository {
   private readonly pool: Pool
+  private readonly tables: TableNames
 
   constructor(options: PostgresLedgerRepositoryOptions) {
     this.pool = options.pool
+    this.tables = createTableNames(options.tables)
   }
 
   async getHead(): Promise<HeadInfo> {
     const result = await this.pool.query(`
       SELECT MAX(created_at) as last_modified, COUNT(*) as version
-      FROM transactions
+      FROM ${this.tables.transactions}
     `)
 
     return {
@@ -40,7 +47,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
   async listTransactions(filter?: TransactionFilter): Promise<Transaction[]> {
     let query = `
       SELECT t.id, t.date, t.description, t.comment, t.external_id, t.metadata
-      FROM transactions t
+      FROM ${this.tables.transactions} t
       WHERE 1=1
     `
     const params: unknown[] = []
@@ -63,8 +70,8 @@ export class PostgresLedgerRepository implements LedgerRepository {
 
     if (filter?.accountPattern) {
       query += ` AND EXISTS (
-        SELECT 1 FROM postings p
-        JOIN accounts a ON p.account_id = a.id
+        SELECT 1 FROM ${this.tables.postings} p
+        JOIN ${this.tables.accounts} a ON p.account_id = a.id
         WHERE p.transaction_id = t.id
         AND a.full_name LIKE $${paramIndex++}
       )`
@@ -73,7 +80,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
 
     if (filter?.commodity) {
       query += ` AND EXISTS (
-        SELECT 1 FROM postings p
+        SELECT 1 FROM ${this.tables.postings} p
         WHERE p.transaction_id = t.id
         AND p.commodity_symbol = $${paramIndex++}
       )`
@@ -107,7 +114,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
   async getTransaction(id: string): Promise<Transaction | null> {
     const result = await this.pool.query<TransactionRow>(`
       SELECT id, date, description, comment, external_id, metadata
-      FROM transactions
+      FROM ${this.tables.transactions}
       WHERE id = $1
     `, [id])
 
@@ -146,7 +153,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
 
   async existsExternalId(externalId: string): Promise<boolean> {
     const result = await this.pool.query(`
-      SELECT 1 FROM transactions WHERE external_id = $1 LIMIT 1
+      SELECT 1 FROM ${this.tables.transactions} WHERE external_id = $1 LIMIT 1
     `, [externalId])
 
     return result.rows.length > 0
@@ -154,7 +161,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
 
   async listAccounts(): Promise<string[]> {
     const result = await this.pool.query(`
-      SELECT full_name FROM accounts ORDER BY full_name
+      SELECT full_name FROM ${this.tables.accounts} ORDER BY full_name
     `)
 
     return result.rows.map(row => row.full_name)
@@ -162,7 +169,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
 
   async listCommodities(): Promise<string[]> {
     const result = await this.pool.query(`
-      SELECT DISTINCT commodity_symbol FROM postings ORDER BY commodity_symbol
+      SELECT DISTINCT commodity_symbol FROM ${this.tables.postings} ORDER BY commodity_symbol
     `)
 
     return result.rows.map(row => row.commodity_symbol)
@@ -175,7 +182,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
     const params = mapTransactionToParams(txn)
 
     const result = await client.query<{ id: string }>(`
-      INSERT INTO transactions (id, date, description, comment, external_id, metadata)
+      INSERT INTO ${this.tables.transactions} (id, date, description, comment, external_id, metadata)
       VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id
     `, [params.id, params.date, params.description, params.comment, params.external_id, params.metadata])
@@ -189,7 +196,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
       const postingParams = mapPostingToParams(posting, transactionId, accountId)
 
       await client.query(`
-        INSERT INTO postings (transaction_id, account_id, quantity, commodity_symbol, comment, metadata)
+        INSERT INTO ${this.tables.postings} (transaction_id, account_id, quantity, commodity_symbol, comment, metadata)
         VALUES ($1, $2, $3, $4, $5, $6)
       `, [
         postingParams.transaction_id,
@@ -205,9 +212,8 @@ export class PostgresLedgerRepository implements LedgerRepository {
   }
 
   private async ensureAccount(client: PoolClient, account: Account): Promise<number> {
-    // Try to insert, on conflict get existing
     const result = await client.query<{ id: number }>(`
-      INSERT INTO accounts (full_name, kind)
+      INSERT INTO ${this.tables.accounts} (full_name, kind)
       VALUES ($1, $2)
       ON CONFLICT (full_name) DO UPDATE SET full_name = EXCLUDED.full_name
       RETURNING id
@@ -217,11 +223,10 @@ export class PostgresLedgerRepository implements LedgerRepository {
   }
 
   private async ensureCommodity(client: PoolClient, symbol: string): Promise<void> {
-    // Infer commodity type from symbol
     const type = this.inferCommodityType(symbol)
 
     await client.query(`
-      INSERT INTO commodities (symbol, type)
+      INSERT INTO ${this.tables.commodities} (symbol, type)
       VALUES ($1, $2)
       ON CONFLICT (symbol) DO NOTHING
     `, [symbol, type])
@@ -241,8 +246,8 @@ export class PostgresLedgerRepository implements LedgerRepository {
     const result = await this.pool.query<PostingRow>(`
       SELECT p.id, p.transaction_id, p.account_id, a.full_name as account_full_name,
              p.quantity, p.commodity_symbol, p.comment, p.metadata
-      FROM postings p
-      JOIN accounts a ON p.account_id = a.id
+      FROM ${this.tables.postings} p
+      JOIN ${this.tables.accounts} a ON p.account_id = a.id
       WHERE p.transaction_id = $1
       ORDER BY p.id
     `, [transactionId])
@@ -251,9 +256,6 @@ export class PostgresLedgerRepository implements LedgerRepository {
   }
 
   private patternToLike(pattern: string): string {
-    // Convert account pattern to SQL LIKE pattern
-    // * -> matches one segment (no colon)
-    // ** -> matches anything
     return pattern
       .replace(/\*\*/g, '%')
       .replace(/\*/g, '%')

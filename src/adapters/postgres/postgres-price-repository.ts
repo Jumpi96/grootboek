@@ -2,22 +2,29 @@ import type { Pool } from 'pg'
 import { Price } from '../../core/domain/price.js'
 import { PriceRepository, PriceFilter } from '../../core/ports/price-repository.js'
 import { mapRowToPrice, mapPriceToParams, PriceRow } from './mappers/price-mapper.js'
+import { TableNames, createTableNames, TableConfigOptions } from './table-config.js'
 
 export interface PostgresPriceRepositoryOptions {
   pool: Pool
+  /**
+   * Table configuration - use prefix or custom table names
+   */
+  tables?: TableConfigOptions
 }
 
 export class PostgresPriceRepository implements PriceRepository {
   private readonly pool: Pool
+  private readonly tables: TableNames
 
   constructor(options: PostgresPriceRepositoryOptions) {
     this.pool = options.pool
+    this.tables = createTableNames(options.tables)
   }
 
   async listPrices(filter?: PriceFilter): Promise<Price[]> {
     let query = `
       SELECT date, base_symbol, quote_symbol, price, comment
-      FROM prices
+      FROM ${this.tables.prices}
       WHERE 1=1
     `
     const params: unknown[] = []
@@ -60,7 +67,7 @@ export class PostgresPriceRepository implements PriceRepository {
     // Try direct price first
     const directResult = await this.pool.query<PriceRow>(`
       SELECT date, base_symbol, quote_symbol, price, comment
-      FROM prices
+      FROM ${this.tables.prices}
       WHERE base_symbol = $1 AND quote_symbol = $2 AND date <= $3
       ORDER BY date DESC
       LIMIT 1
@@ -73,7 +80,7 @@ export class PostgresPriceRepository implements PriceRepository {
     // Try inverse price
     const inverseResult = await this.pool.query<PriceRow>(`
       SELECT date, base_symbol, quote_symbol, price, comment
-      FROM prices
+      FROM ${this.tables.prices}
       WHERE base_symbol = $1 AND quote_symbol = $2 AND date <= $3
       ORDER BY date DESC
       LIMIT 1
@@ -102,7 +109,7 @@ export class PostgresPriceRepository implements PriceRepository {
         const params = mapPriceToParams(price)
 
         await client.query(`
-          INSERT INTO prices (date, base_symbol, quote_symbol, price, comment)
+          INSERT INTO ${this.tables.prices} (date, base_symbol, quote_symbol, price, comment)
           VALUES ($1, $2, $3, $4, $5)
           ON CONFLICT (date, base_symbol, quote_symbol)
           DO UPDATE SET price = EXCLUDED.price, comment = EXCLUDED.comment
@@ -120,7 +127,7 @@ export class PostgresPriceRepository implements PriceRepository {
 
   async listBaseCommodities(): Promise<string[]> {
     const result = await this.pool.query(`
-      SELECT DISTINCT base_symbol FROM prices ORDER BY base_symbol
+      SELECT DISTINCT base_symbol FROM ${this.tables.prices} ORDER BY base_symbol
     `)
 
     return result.rows.map(row => row.base_symbol)
@@ -130,7 +137,7 @@ export class PostgresPriceRepository implements PriceRepository {
     const type = this.inferCommodityType(symbol)
 
     await client.query(`
-      INSERT INTO commodities (symbol, type)
+      INSERT INTO ${this.tables.commodities} (symbol, type)
       VALUES ($1, $2)
       ON CONFLICT (symbol) DO NOTHING
     `, [symbol, type])

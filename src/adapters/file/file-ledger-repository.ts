@@ -1,5 +1,3 @@
-import * as fs from 'node:fs/promises'
-import * as path from 'node:path'
 import { Decimal } from '../../core/utils/decimal.js'
 import { Transaction } from '../../core/domain/transaction.js'
 import { Posting } from '../../core/domain/posting.js'
@@ -10,57 +8,47 @@ import {
   TransactionFilter,
   HeadInfo
 } from '../../core/ports/ledger-repository.js'
-import { Parser } from './parser/parser.js'
-import { TransactionNode, PostingNode } from './parser/ast.js'
-import { JournalWriter } from './serializer/journal-writer.js'
-import { GitClient } from './git-client.js'
+import { Parser } from '../git/parser/parser.js'
+import { TransactionNode, PostingNode } from '../git/parser/ast.js'
+import { JournalWriter } from '../git/serializer/journal-writer.js'
+import { FileProvider, NodeFileProvider } from './file-provider.js'
 
-export interface GitLedgerRepositoryOptions {
+export interface FileLedgerRepositoryOptions {
+  /**
+   * Path to the journal file
+   */
   journalPath: string
-  gitClient?: GitClient
-  autoCommit?: boolean
-  commitMessage?: (txns: Transaction[]) => string
+
+  /**
+   * File provider implementation.
+   * Defaults to NodeFileProvider for Node.js environments.
+   * Pass InMemoryFileProvider for testing or a custom provider for browser.
+   */
+  fileProvider?: FileProvider
 }
 
-export class GitLedgerRepository implements LedgerRepository {
+export class FileLedgerRepository implements LedgerRepository {
   private readonly journalPath: string
-  private readonly gitClient?: GitClient
-  private readonly autoCommit: boolean
-  private readonly commitMessage: (txns: Transaction[]) => string
+  private readonly fileProvider: FileProvider
   private readonly parser: Parser
   private readonly writer: JournalWriter
 
   private cachedTransactions: Transaction[] | null = null
   private cacheVersion: string | null = null
 
-  constructor(options: GitLedgerRepositoryOptions) {
-    this.journalPath = path.resolve(options.journalPath)
-    this.gitClient = options.gitClient
-    this.autoCommit = options.autoCommit ?? false
-    this.commitMessage = options.commitMessage ??
-      ((txns) => `Add ${txns.length} transaction(s)`)
+  constructor(options: FileLedgerRepositoryOptions) {
+    this.journalPath = options.journalPath
+    this.fileProvider = options.fileProvider ?? new NodeFileProvider()
     this.parser = new Parser()
     this.writer = new JournalWriter()
   }
 
   async getHead(): Promise<HeadInfo> {
-    const stat = await fs.stat(this.journalPath).catch(() => null)
-
-    let commitHash: string | undefined
-    let lastModified: Date | undefined
-
-    if (this.gitClient) {
-      commitHash = (await this.gitClient.getCurrentCommitHash()) ?? undefined
-    }
-
-    if (stat) {
-      lastModified = stat.mtime
-    }
+    const stat = await this.fileProvider.stat(this.journalPath)
 
     return {
-      version: commitHash ?? stat?.mtime.toISOString() ?? 'unknown',
-      commitHash,
-      lastModified
+      version: stat?.lastModified.toISOString() ?? 'empty',
+      lastModified: stat?.lastModified
     }
   }
 
@@ -113,51 +101,28 @@ export class GitLedgerRepository implements LedgerRepository {
   }
 
   async appendTransactions(transactions: Transaction[]): Promise<Transaction[]> {
-    // Read current content (keep for rollback)
-    const originalContent = await this.readJournalFile()
+    // Read current content (keep for potential rollback if needed)
+    const originalContent = await this.fileProvider.read(this.journalPath)
 
     // Generate IDs for new transactions if needed
     const newTransactions = transactions.map((txn, idx) => {
       if (txn.id && !txn.id.includes('-')) {
         return txn
       }
-      // Generate a deterministic ID based on content
-      const idBase = `${txn.date.toISOString().split('T')[0]}-${idx}`
+      const idBase = `${txn.date.toISOString().split('T')[0]}-${idx}-${Date.now()}`
       return txn.withId(idBase)
     })
 
     // Append to journal
     const newContent = this.writer.appendToJournal(originalContent, newTransactions, [])
 
-    // Write to temp file first, then rename (atomic on most filesystems)
-    const tempPath = `${this.journalPath}.tmp`
+    // Write file (FileProvider handles atomic write)
+    await this.fileProvider.write(this.journalPath, newContent)
 
-    try {
-      await fs.writeFile(tempPath, newContent, 'utf-8')
-      await fs.rename(tempPath, this.journalPath)
+    // Invalidate cache
+    this.cachedTransactions = null
 
-      // Invalidate cache
-      this.cachedTransactions = null
-
-      // Auto-commit if enabled
-      if (this.autoCommit && this.gitClient) {
-        try {
-          await this.gitClient.stageFile(this.journalPath)
-          await this.gitClient.commit(this.commitMessage(newTransactions))
-        } catch (gitError) {
-          // Git commit failed - restore original file
-          await fs.writeFile(this.journalPath, originalContent, 'utf-8')
-          this.cachedTransactions = null
-          throw new Error(`Git commit failed, changes rolled back: ${gitError}`)
-        }
-      }
-
-      return newTransactions
-    } catch (e) {
-      // Clean up temp file if it exists
-      await fs.unlink(tempPath).catch(() => {})
-      throw e
-    }
+    return newTransactions
   }
 
   async existsExternalId(externalId: string): Promise<boolean> {
@@ -198,7 +163,7 @@ export class GitLedgerRepository implements LedgerRepository {
       return this.cachedTransactions
     }
 
-    const content = await this.readJournalFile()
+    const content = await this.fileProvider.read(this.journalPath)
     const ast = this.parser.parse(content)
 
     const transactions: Transaction[] = []
@@ -209,7 +174,7 @@ export class GitLedgerRepository implements LedgerRepository {
           const txn = this.nodeToTransaction(entry)
           transactions.push(txn)
         } catch (e) {
-          // Skip invalid transactions but log warning
+          // Skip invalid transactions
           console.warn(`Skipping invalid transaction at line ${entry.lineNumber}: ${e}`)
         }
       }
@@ -225,7 +190,7 @@ export class GitLedgerRepository implements LedgerRepository {
     const date = this.parseDate(node.date)
 
     const postings = node.postings
-      .filter(p => p.amount) // Only postings with amounts
+      .filter(p => p.amount)
       .map(p => this.nodeToPosting(p))
 
     // Parse externalId from comment if present
@@ -269,19 +234,7 @@ export class GitLedgerRepository implements LedgerRepository {
   }
 
   private parseDate(dateStr: string): Date {
-    // Convert YYYY/MM/DD or YYYY-MM-DD to Date
     const normalized = dateStr.replace(/\//g, '-')
     return new Date(normalized + 'T00:00:00.000Z')
-  }
-
-  private async readJournalFile(): Promise<string> {
-    try {
-      return await fs.readFile(this.journalPath, 'utf-8')
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-        return ''
-      }
-      throw e
-    }
   }
 }

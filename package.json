@@ -21,6 +21,10 @@
       "types": "./dist/core/index.d.ts",
       "import": "./dist/core/index.js"
     },
+    "./adapters/file": {
+      "types": "./dist/adapters/file/index.d.ts",
+      "import": "./dist/adapters/file/index.js"
+    },
     "./adapters/git": {
       "types": "./dist/adapters/git/index.d.ts",
       "import": "./dist/adapters/git/index.js"
