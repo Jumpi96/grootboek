@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Decimal } from '../utils/decimal.js'
 import { Posting } from './posting.js'
 import { BalanceError } from '../errors/balance-error.js'
@@ -24,7 +25,7 @@ export class Transaction {
   readonly metadata: Record<string, string>
 
   constructor(props: TransactionProps) {
-    this.id = props.id ?? crypto.randomUUID()
+    this.id = props.id ?? randomUUID()
     this.date = props.date
     this.description = props.description
     this.postings = Object.freeze([...props.postings])
