@@ -324,7 +324,10 @@ export class Lexer {
            this.isDigit(char) ||
            char === ':' ||
            char === '_' ||
-           char === '-'
+           char === '-' ||
+           char === '.' ||
+           char === '/' ||
+           char === '&'
   }
 
   private peek(offset: number): string {

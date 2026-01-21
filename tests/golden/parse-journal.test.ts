@@ -1,13 +1,22 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { Parser } from '../../src/adapters/git/parser/parser.js'
 import { GitLedgerRepository } from '../../src/adapters/git/git-ledger-repository.js'
 import { GitPriceRepository } from '../../src/adapters/git/git-price-repository.js'
 
-describe('Golden Tests: Parse my.journal', () => {
-  const journalPath = path.join(process.cwd(), 'my.journal')
+// Check if my.journal exists - these tests only run locally
+const journalPath = path.join(process.cwd(), 'my.journal')
+let journalExists = false
 
+try {
+  await fs.access(journalPath)
+  journalExists = true
+} catch {
+  journalExists = false
+}
+
+describe.skipIf(!journalExists)('Golden Tests: Parse my.journal', () => {
   it('should parse the journal file without errors', async () => {
     const content = await fs.readFile(journalPath, 'utf-8')
     const parser = new Parser()

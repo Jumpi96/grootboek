@@ -224,9 +224,44 @@ export class GitLedgerRepository implements LedgerRepository {
   private nodeToTransaction(node: TransactionNode): Transaction {
     const date = this.parseDate(node.date)
 
-    const postings = node.postings
-      .filter(p => p.amount) // Only postings with amounts
-      .map(p => this.nodeToPosting(p))
+    // Separate postings with and without amounts
+    const postingsWithAmount = node.postings.filter(p => p.amount)
+    const postingsWithoutAmount = node.postings.filter(p => !p.amount)
+
+    // Ledger allows at most one elided posting
+    if (postingsWithoutAmount.length > 1) {
+      throw new Error('Only one posting may have an elided amount')
+    }
+
+    // Convert postings with explicit amounts
+    const postings: Posting[] = postingsWithAmount.map(p => this.nodeToPosting(p))
+
+    // Calculate implicit amounts for the elided posting (if any)
+    if (postingsWithoutAmount.length === 1) {
+      const elidedPosting = postingsWithoutAmount[0]
+      const elidedAccount = new Account({ name: elidedPosting.account })
+
+      // Calculate sum per commodity from explicit postings
+      const commoditySums = new Map<string, Decimal>()
+      for (const p of postings) {
+        const current = commoditySums.get(p.commodity) ?? new Decimal(0)
+        commoditySums.set(p.commodity, current.plus(p.quantity))
+      }
+
+      // The elided posting receives the negation of each commodity's sum
+      for (const [commodity, sum] of commoditySums) {
+        if (!sum.isZero()) {
+          postings.push(new Posting({
+            account: elidedAccount,
+            amount: new Money({
+              quantity: sum.negated(),
+              commodity
+            }),
+            comment: elidedPosting.comment
+          }))
+        }
+      }
+    }
 
     // Parse externalId from comment if present
     let externalId: string | undefined
